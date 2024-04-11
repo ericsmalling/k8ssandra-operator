@@ -3,7 +3,6 @@ package k8ssandra
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/adutra/goalesce"
 	"github.com/go-logr/logr"
@@ -21,10 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-const (
-	operatorNamespaceEnvVar = "OPERATOR_NAMESPACE"
 )
 
 // Create all things Medusa related in the cassdc podTemplateSpec
@@ -135,8 +130,7 @@ func (r *K8ssandraClusterReconciler) reconcileMedusa(
 			return result.RequeueSoon(r.DefaultDelay)
 		}
 		// Create a cron job to purge Medusa backups
-		operatorNamespace := r.getOperatorNamespace()
-		purgeCronJob, err := medusa.PurgeCronJob(dcConfig, kc.SanitizedName(), operatorNamespace, logger)
+		purgeCronJob, err := medusa.PurgeCronJob(dcConfig, kc.SanitizedName(), namespace, logger)
 		if err != nil {
 			logger.Info("Failed to create Medusa purge backups cronjob", "error", err)
 			return result.Error(err)
@@ -325,12 +319,4 @@ func (r *K8ssandraClusterReconciler) reconcileBucketSecrets(
 	}
 
 	return nil
-}
-
-func (r *K8ssandraClusterReconciler) getOperatorNamespace() string {
-	operatorNamespace, found := os.LookupEnv(operatorNamespaceEnvVar)
-	if !found {
-		return "default"
-	}
-	return operatorNamespace
 }
