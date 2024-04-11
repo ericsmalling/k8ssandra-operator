@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
-	cassdcapi "github.com/k8ssandra/cass-operator/apis/cassandra/v1beta1"
 	api "github.com/k8ssandra/k8ssandra-operator/apis/k8ssandra/v1alpha1"
 	medusaapi "github.com/k8ssandra/k8ssandra-operator/apis/medusa/v1alpha1"
 	"github.com/k8ssandra/k8ssandra-operator/pkg/cassandra"
@@ -18,11 +17,9 @@ import (
 func TestMedusaIni(t *testing.T) {
 	t.Run("Full", testMedusaIniFull)
 	t.Run("NoPrefix", testMedusaIniNoPrefix)
-	t.Run("ZeroConcurrentTransfers", testMedusaIniZeroConcurrentTransfers)
 	t.Run("Secured", testMedusaIniSecured)
 	t.Run("Unsecured", testMedusaIniUnsecured)
 	t.Run("MissingOptional", testMedusaIniMissingOptionalSettings)
-	t.Run("SecuredDcLevelSetting", testMedusaIniSecuredDcLevelSetting)
 }
 
 func testMedusaIniFull(t *testing.T) {
@@ -73,8 +70,7 @@ func testMedusaIniFull(t *testing.T) {
 		},
 	}
 
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
+	medusaIni := CreateMedusaIni(kc)
 
 	assert.Contains(t, medusaIni, "storage_provider = s3")
 	assert.Contains(t, medusaIni, "bucket_name = bucket")
@@ -139,9 +135,7 @@ func testMedusaIniNoPrefix(t *testing.T) {
 		},
 	}
 
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
+	medusaIni := CreateMedusaIni(kc)
 	assert.Contains(t, medusaIni, "storage_provider = s3")
 	assert.Contains(t, medusaIni, "bucket_name = bucket")
 	assert.Contains(t, medusaIni, "prefix = demo")
@@ -156,74 +150,6 @@ func testMedusaIniNoPrefix(t *testing.T) {
 	assert.Contains(t, medusaIni, "port = 9001")
 	assert.Contains(t, medusaIni, "secure = False")
 	assert.Contains(t, medusaIni, "backup_grace_period_in_days = 7")
-	assert.Contains(t, medusaIni, "cassandra_url = http://127.0.0.1:8080/api/v0/ops/node/snapshots")
-}
-
-func testMedusaIniZeroConcurrentTransfers(t *testing.T) {
-	kc := &api.K8ssandraCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "test",
-			Name:      "demo",
-		},
-		Spec: api.K8ssandraClusterSpec{
-			Cassandra: &api.CassandraClusterTemplate{
-				Datacenters: []api.CassandraDatacenterTemplate{
-					{
-						Meta: api.EmbeddedObjectMeta{
-							Name: "dc1",
-						},
-						K8sContext: "k8sCtx0",
-						Size:       3,
-						DatacenterOptions: api.DatacenterOptions{
-							ServerVersion: "3.11.14",
-						},
-					},
-				},
-			},
-			Medusa: &medusaapi.MedusaClusterTemplate{
-				StorageProperties: medusaapi.Storage{
-					StorageProvider: "s3",
-					StorageSecretRef: corev1.LocalObjectReference{
-						Name: "secret",
-					},
-					BucketName:               "bucket",
-					MaxBackupAge:             10,
-					MaxBackupCount:           20,
-					ApiProfile:               "default",
-					TransferMaxBandwidth:     "100MB/s",
-					ConcurrentTransfers:      0,
-					MultiPartUploadThreshold: 204857600,
-					Host:                     "192.168.0.1",
-					Region:                   "us-east-1",
-					Port:                     9001,
-					Secure:                   false,
-					BackupGracePeriodInDays:  7,
-				},
-				CassandraUserSecretRef: corev1.LocalObjectReference{
-					Name: "test-superuser",
-				},
-			},
-		},
-	}
-
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
-	assert.Contains(t, medusaIni, "storage_provider = s3")
-	assert.Contains(t, medusaIni, "bucket_name = bucket")
-	assert.Contains(t, medusaIni, "prefix = demo")
-	assert.Contains(t, medusaIni, "max_backup_age = 10")
-	assert.Contains(t, medusaIni, "max_backup_count = 20")
-	assert.Contains(t, medusaIni, "api_profile = default")
-	assert.Contains(t, medusaIni, "transfer_max_bandwidth = 100MB/s")
-	assert.Contains(t, medusaIni, "concurrent_transfers = 1")
-	assert.Contains(t, medusaIni, "multi_part_upload_threshold = 204857600")
-	assert.Contains(t, medusaIni, "host = 192.168.0.1")
-	assert.Contains(t, medusaIni, "region = us-east-1")
-	assert.Contains(t, medusaIni, "port = 9001")
-	assert.Contains(t, medusaIni, "secure = False")
-	assert.Contains(t, medusaIni, "backup_grace_period_in_days = 7")
-	assert.Contains(t, medusaIni, "cassandra_url = http://127.0.0.1:8080/api/v0/ops/node/snapshots")
 }
 
 func testMedusaIniSecured(t *testing.T) {
@@ -234,13 +160,6 @@ func testMedusaIniSecured(t *testing.T) {
 		},
 		Spec: api.K8ssandraClusterSpec{
 			Cassandra: &api.CassandraClusterTemplate{
-				DatacenterOptions: api.DatacenterOptions{
-					ManagementApiAuth: &cassdcapi.ManagementApiAuthConfig{
-						Manual: &cassdcapi.ManagementApiAuthManualConfig{
-							ClientSecretName: "test-client-secret",
-						},
-					},
-				},
 				Datacenters: []api.CassandraDatacenterTemplate{
 					{
 						Meta: api.EmbeddedObjectMeta{
@@ -281,94 +200,22 @@ func testMedusaIniSecured(t *testing.T) {
 		},
 	}
 
-	assert := assert.New(t)
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
-	assert.Contains(medusaIni, "storage_provider = s3")
-	assert.Contains(medusaIni, "bucket_name = bucket")
-	assert.Contains(medusaIni, "prefix = demo")
-	assert.Contains(medusaIni, "max_backup_age = 10")
-	assert.Contains(medusaIni, "max_backup_count = 20")
-	assert.Contains(medusaIni, "api_profile = default")
-	assert.Contains(medusaIni, "transfer_max_bandwidth = 100MB/s")
-	assert.Contains(medusaIni, "concurrent_transfers = 2")
-	assert.Contains(medusaIni, "multi_part_upload_threshold = 204857600")
-	assert.Contains(medusaIni, "host = 192.168.0.1")
-	assert.Contains(medusaIni, "region = us-east-1")
-	assert.Contains(medusaIni, "port = 9001")
-	assert.Contains(medusaIni, "secure = True")
-	assert.Contains(medusaIni, "ssl_verify = True")
-	assert.Contains(medusaIni, "backup_grace_period_in_days = 7")
-	assert.Contains(medusaIni, "ca_cert = /etc/encryption/mgmt/ca.crt")
-	assert.Contains(medusaIni, "tls_cert = /etc/encryption/mgmt/tls.crt")
-	assert.Contains(medusaIni, "tls_key = /etc/encryption/mgmt/tls.key")
-	assert.Contains(medusaIni, "cassandra_url = https://127.0.0.1:8080/api/v0/ops/node/snapshots")
-
-	assert.NotContains(medusaIni, "\t")
-}
-
-func testMedusaIniSecuredDcLevelSetting(t *testing.T) {
-	kc := &api.K8ssandraCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "test",
-			Name:      "demo",
-		},
-		Spec: api.K8ssandraClusterSpec{
-			Cassandra: &api.CassandraClusterTemplate{
-				Datacenters: []api.CassandraDatacenterTemplate{
-					{
-						Meta: api.EmbeddedObjectMeta{
-							Name: "dc1",
-						},
-						K8sContext: "k8sCtx0",
-						Size:       3,
-						DatacenterOptions: api.DatacenterOptions{
-							ManagementApiAuth: &cassdcapi.ManagementApiAuthConfig{
-								Manual: &cassdcapi.ManagementApiAuthManualConfig{
-									ClientSecretName: "test-client-secret",
-								},
-							},
-							ServerVersion: "3.11.14",
-						},
-					},
-				},
-			},
-			Medusa: &medusaapi.MedusaClusterTemplate{
-				StorageProperties: medusaapi.Storage{
-					StorageProvider: "s3",
-					StorageSecretRef: corev1.LocalObjectReference{
-						Name: "secret",
-					},
-					BucketName:               "bucket",
-					MaxBackupAge:             10,
-					MaxBackupCount:           20,
-					ApiProfile:               "default",
-					TransferMaxBandwidth:     "100MB/s",
-					ConcurrentTransfers:      2,
-					MultiPartUploadThreshold: 204857600,
-					Host:                     "192.168.0.1",
-					Region:                   "us-east-1",
-					Port:                     9001,
-					Secure:                   true,
-					SslVerify:                true,
-					BackupGracePeriodInDays:  7,
-				},
-				CassandraUserSecretRef: corev1.LocalObjectReference{
-					Name: "test-superuser",
-				},
-			},
-		},
-	}
-
-	assert := assert.New(t)
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
-	assert.Contains(medusaIni, "ca_cert = /etc/encryption/mgmt/ca.crt")
-	assert.Contains(medusaIni, "tls_cert = /etc/encryption/mgmt/tls.crt")
-	assert.Contains(medusaIni, "tls_key = /etc/encryption/mgmt/tls.key")
-	assert.Contains(medusaIni, "cassandra_url = https://127.0.0.1:8080/api/v0/ops/node/snapshots")
+	medusaIni := CreateMedusaIni(kc)
+	assert.Contains(t, medusaIni, "storage_provider = s3")
+	assert.Contains(t, medusaIni, "bucket_name = bucket")
+	assert.Contains(t, medusaIni, "prefix = demo")
+	assert.Contains(t, medusaIni, "max_backup_age = 10")
+	assert.Contains(t, medusaIni, "max_backup_count = 20")
+	assert.Contains(t, medusaIni, "api_profile = default")
+	assert.Contains(t, medusaIni, "transfer_max_bandwidth = 100MB/s")
+	assert.Contains(t, medusaIni, "concurrent_transfers = 2")
+	assert.Contains(t, medusaIni, "multi_part_upload_threshold = 204857600")
+	assert.Contains(t, medusaIni, "host = 192.168.0.1")
+	assert.Contains(t, medusaIni, "region = us-east-1")
+	assert.Contains(t, medusaIni, "port = 9001")
+	assert.Contains(t, medusaIni, "secure = True")
+	assert.Contains(t, medusaIni, "ssl_verify = True")
+	assert.Contains(t, medusaIni, "backup_grace_period_in_days = 7")
 }
 
 func testMedusaIniUnsecured(t *testing.T) {
@@ -418,9 +265,7 @@ func testMedusaIniUnsecured(t *testing.T) {
 		},
 	}
 
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
+	medusaIni := CreateMedusaIni(kc)
 	assert.Contains(t, medusaIni, "storage_provider = s3")
 	assert.Contains(t, medusaIni, "bucket_name = bucket")
 	assert.Contains(t, medusaIni, "prefix = demo")
@@ -474,9 +319,7 @@ func testMedusaIniMissingOptionalSettings(t *testing.T) {
 		},
 	}
 
-	dcConfig := cassandra.Coalesce(kc.CassClusterName(), kc.Spec.Cassandra.DeepCopy(), kc.Spec.Cassandra.Datacenters[0].DeepCopy())
-	medusaIni := CreateMedusaIni(kc, dcConfig)
-
+	medusaIni := CreateMedusaIni(kc)
 	assert.Contains(t, medusaIni, "storage_provider = s3")
 	assert.Contains(t, medusaIni, "bucket_name = bucket")
 	assert.Contains(t, medusaIni, "prefix = demo")
@@ -484,7 +327,7 @@ func testMedusaIniMissingOptionalSettings(t *testing.T) {
 	assert.Contains(t, medusaIni, "max_backup_count = 0")
 	assert.NotContains(t, medusaIni, "api_profile =")
 	assert.NotContains(t, medusaIni, "transfer_max_bandwidth =")
-	assert.Contains(t, medusaIni, "concurrent_transfers = 1")
+	assert.NotContains(t, medusaIni, "concurrent_transfers =")
 	assert.NotContains(t, medusaIni, "multi_part_upload_threshold =")
 	assert.NotContains(t, medusaIni, "host =")
 	assert.NotContains(t, medusaIni, "region =")
@@ -673,36 +516,4 @@ func TestGenerateMedusaProbe(t *testing.T) {
 	probe, err := generateMedusaProbe(rejectedProbe)
 	assert.Error(t, err)
 	assert.Nil(t, probe)
-}
-
-func TestPurgeCronJob(t *testing.T) {
-	// Define your test inputs
-	dcConfig := &cassandra.DatacenterConfig{
-		DatacenterName: "testDc",
-	}
-	clusterName := "testCluster"
-	namespace := "testNamespace"
-	logger := logr.New(logr.Discard().GetSink())
-
-	// Call the function with the test inputs
-	actualCronJob, err := PurgeCronJob(dcConfig, clusterName, namespace, logger)
-	assert.Nil(t, err)
-	assert.Equal(t, fmt.Sprintf("%s-%s-medusa-purge", "testcluster", "testdc"), actualCronJob.ObjectMeta.Name)
-	assert.Equal(t, 3, len(actualCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command))
-	assert.Contains(t, actualCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Command[2], "\\nspec:\\n  cassandraDatacenter: testdc")
-	assert.Equal(t, "default", actualCronJob.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName)
-}
-
-func TestPurgeCronJobNameTooLong(t *testing.T) {
-	// Define your test inputs
-	dcConfig := &cassandra.DatacenterConfig{
-		DatacenterName: "testDatacentercWithAReallyLongNameToTestThatTheCharacterCountOfTheNameGoesOverTwoHundredFiftyThreeCharactersTestTestTestTest",
-	}
-	clusterName := "testClusterNameBeingWayTooLongToTestThatTheCharacterCountOfTheNameGoesOverTwoHundredFiftyThreeCharactersTestTestTestTest"
-	namespace := "testNamespace"
-	logger := logr.New(logr.Discard().GetSink())
-
-	// Call the function with the test inputs
-	_, err := PurgeCronJob(dcConfig, clusterName, namespace, logger)
-	assert.NotNil(t, err)
 }
