@@ -81,7 +81,7 @@ func (r *K8ssandraClusterReconciler) reconcileMedusa(
 		}
 
 		// Create the Medusa standalone pod
-		desiredMedusaStandalone := medusa.StandaloneMedusaDeployment(*medusaContainer, kc.SanitizedName(), dcConfig.SanitizedName(), dcNamespace, logger, kc.Spec.Medusa.ContainerImage)
+		desiredMedusaStandalone := medusa.StandaloneMedusaDeployment(*medusaContainer, kc.SanitizedName(), dcConfig.SanitizedName(), dcNamespace, logger)
 
 		// Add the volumes previously computed to the Medusa standalone pod
 		for _, volume := range volumes {
@@ -132,21 +132,6 @@ func (r *K8ssandraClusterReconciler) reconcileMedusa(
 			logger.Info("Medusa standalone deployment is not ready yet")
 			return result.RequeueSoon(r.DefaultDelay)
 		}
-		// Create a cron job to purge Medusa backups
-		purgeCronJob, err := medusa.PurgeCronJob(dcConfig, kc.SanitizedName(), namespace, logger)
-		if err != nil {
-			logger.Info("Failed to create Medusa purge backups cronjob", "error", err)
-			return result.Error(err)
-		}
-		purgeCronJob.SetLabels(labels.CleanedUpByLabels(kcKey))
-		recRes = reconciliation.ReconcileObject(ctx, remoteClient, r.DefaultDelay, *purgeCronJob)
-		switch {
-		case recRes.IsError():
-			return recRes
-		case recRes.IsRequeue():
-			return recRes
-		}
-
 	} else {
 		logger.Info("Medusa is not enabled")
 	}
@@ -218,7 +203,7 @@ func (r *K8ssandraClusterReconciler) reconcileMedusaConfigMap(
 ) result.ReconcileResult {
 	logger.Info("Reconciling Medusa configMap on namespace : " + namespace)
 	if kc.Spec.Medusa != nil {
-		medusaIni := medusa.CreateMedusaIni(kc, dcConfig)
+		medusaIni := medusa.CreateMedusaIni(kc)
 		desiredConfigMap := medusa.CreateMedusaConfigMap(namespace, kc.SanitizedName(), medusaIni)
 		kcKey := utils.GetKey(kc)
 		desiredConfigMap.SetLabels(labels.CleanedUpByLabels(kcKey))

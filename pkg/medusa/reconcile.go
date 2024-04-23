@@ -3,17 +3,14 @@ package medusa
 import (
 	"bytes"
 	"fmt"
-	"os"
 	reflect "reflect"
 	"text/template"
 
 	"github.com/adutra/goalesce"
-	cassdcapi "github.com/k8ssandra/cass-operator/apis/cassandra/v1beta1"
 	k8ss "github.com/k8ssandra/k8ssandra-operator/apis/k8ssandra/v1alpha1"
 	api "github.com/k8ssandra/k8ssandra-operator/apis/medusa/v1alpha1"
 	"github.com/k8ssandra/k8ssandra-operator/pkg/images"
 	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/pointer"
 
@@ -42,20 +39,20 @@ const (
 	MainContainerMemLimit   = "8Gi"
 	MainContainerCpuRequest = "100m"
 
-	MedusaBackupsVolumeName  = "medusa-backups"
-	MedusaBackupsMountPath   = "/mnt/backups"
-	serviceAccountNameEnvVar = "SERVICE_ACCOUNT_NAME"
+	MedusaBackupsVolumeName = "medusa-backups"
+	MedusaBackupsMountPath  = "/mnt/backups"
 )
 
 var (
 	defaultMedusaImage = images.Image{
+		Registry:   images.DefaultRegistry,
 		Repository: DefaultMedusaImageRepository,
 		Name:       DefaultMedusaImageName,
 		Tag:        DefaultMedusaVersion,
 	}
 )
 
-func CreateMedusaIni(kc *k8ss.K8ssandraCluster, dcConfig *cassandra.DatacenterConfig) string {
+func CreateMedusaIni(kc *k8ss.K8ssandraCluster) string {
 	medusaIniTemplate := `
     [cassandra]
     use_sudo = false
@@ -69,9 +66,7 @@ func CreateMedusaIni(kc *k8ss.K8ssandraCluster, dcConfig *cassandra.DatacenterCo
     use_sudo_for_restore = false
     storage_provider = {{ .Spec.Medusa.StorageProperties.StorageProvider }}
     bucket_name = {{ .Spec.Medusa.StorageProperties.BucketName }}
-    {{- if .Spec.Medusa.StorageProperties.StorageSecretRef.Name }}
     key_file = /etc/medusa-secrets/credentials
-    {{- end }}
     {{- if .Spec.Medusa.StorageProperties.Prefix }}
     prefix = {{ .Spec.Medusa.StorageProperties.Prefix }}
     {{- else }}
@@ -117,42 +112,25 @@ func CreateMedusaIni(kc *k8ss.K8ssandraCluster, dcConfig *cassandra.DatacenterCo
     [grpc]
     enabled = 1
 
-    [logging]
-    level = DEBUG
-
     [kubernetes]
+    cassandra_url = http://127.0.0.1:8080/api/v0/ops/node/snapshots
     use_mgmt_api = 1
-    enabled = 1`
+    enabled = 1
 
-	kcWithProperlyConcurrentMedusa := kc.DeepCopy()
-	if kc.Spec.Medusa.StorageProperties.ConcurrentTransfers == 0 {
-		kcWithProperlyConcurrentMedusa.Spec.Medusa.StorageProperties.ConcurrentTransfers = 1
-	}
+    [logging]
+    level = DEBUG`
+
 	t, err := template.New("ini").Parse(medusaIniTemplate)
 	if err != nil {
 		panic(err)
 	}
 	medusaIni := new(bytes.Buffer)
-	err = t.Execute(medusaIni, kcWithProperlyConcurrentMedusa)
+	err = t.Execute(medusaIni, kc)
 	if err != nil {
 		panic(err)
 	}
 
-	medusaConfig := medusaIni.String()
-
-	// Create Kubernetes config here and append it
-	if dcConfig.ManagementApiAuth != nil && dcConfig.ManagementApiAuth.Manual != nil {
-		medusaConfig += `
-    cassandra_url = https://127.0.0.1:8080/api/v0/ops/node/snapshots
-    ca_cert = /etc/encryption/mgmt/ca.crt
-    tls_cert = /etc/encryption/mgmt/tls.crt
-    tls_key = /etc/encryption/mgmt/tls.key`
-	} else {
-		medusaConfig += `
-    cassandra_url = http://127.0.0.1:8080/api/v0/ops/node/snapshots`
-	}
-
-	return medusaConfig
+	return medusaIni.String()
 }
 
 func CreateMedusaConfigMap(namespace, k8cName, medusaIni string) *corev1.ConfigMap {
@@ -187,7 +165,7 @@ func UpdateMedusaInitContainer(dcConfig *cassandra.DatacenterConfig, medusaSpec 
 	setImage(medusaSpec.ContainerImage, restoreContainer)
 	restoreContainer.SecurityContext = medusaSpec.SecurityContext
 	restoreContainer.Env = medusaEnvVars(medusaSpec, k8cName, useExternalSecrets, "RESTORE")
-	restoreContainer.VolumeMounts = medusaVolumeMounts(dcConfig, medusaSpec, k8cName)
+	restoreContainer.VolumeMounts = medusaVolumeMounts(medusaSpec, k8cName)
 	restoreContainer.Resources = medusaInitContainerResources(medusaSpec)
 
 	if !found {
@@ -247,7 +225,7 @@ func CreateMedusaMainContainer(dcConfig *cassandra.DatacenterConfig, medusaSpec 
 
 	medusaContainer.ReadinessProbe = readinessProbe
 	medusaContainer.LivenessProbe = livenessProbe
-	medusaContainer.VolumeMounts = medusaVolumeMounts(dcConfig, medusaSpec, k8cName)
+	medusaContainer.VolumeMounts = medusaVolumeMounts(medusaSpec, k8cName)
 	medusaContainer.Resources = medusaMainContainerResources(medusaSpec)
 	return medusaContainer, nil
 }
@@ -281,7 +259,7 @@ func setImage(containerImage *images.Image, container *corev1.Container) {
 	container.ImagePullPolicy = image.PullPolicy
 }
 
-func medusaVolumeMounts(dcConfig *cassandra.DatacenterConfig, medusaSpec *api.MedusaClusterTemplate, k8cName string) []corev1.VolumeMount {
+func medusaVolumeMounts(medusaSpec *api.MedusaClusterTemplate, k8cName string) []corev1.VolumeMount {
 	volumeMounts := []corev1.VolumeMount{
 		{ // Cassandra config volume
 			Name:      "server-config",
@@ -309,21 +287,12 @@ func medusaVolumeMounts(dcConfig *cassandra.DatacenterConfig, medusaSpec *api.Me
 		})
 	}
 
-	// Mount secret with Medusa storage backend credentials if the secret ref is provided.
-	if medusaSpec.StorageProperties.StorageSecretRef.Name != "" {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      medusaSpec.StorageProperties.StorageSecretRef.Name,
-			MountPath: "/etc/medusa-secrets",
-		})
-	}
-
-	// Management-api encryption client certificates
-	if dcConfig.ManagementApiAuth != nil && dcConfig.ManagementApiAuth.Manual != nil {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "mgmt-encryption",
-			MountPath: "/etc/encryption/mgmt",
-		})
-	}
+	// Mount secret with Medusa storage backend credentials
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		// Medusa storage secret volume
+		Name:      medusaSpec.StorageProperties.StorageSecretRef.Name,
+		MountPath: "/etc/medusa-secrets",
+	})
 
 	return volumeMounts
 }
@@ -409,23 +378,21 @@ func GenerateMedusaVolumes(dcConfig *cassandra.DatacenterConfig, medusaSpec *api
 	})
 
 	// Medusa credentials volume using the referenced secret
-	if medusaSpec.StorageProperties.StorageSecretRef.Name != "" {
-		secretVolumeIndex, found := cassandra.FindVolume(&dcConfig.PodTemplateSpec, medusaSpec.StorageProperties.StorageSecretRef.Name)
-		secretVolume := &corev1.Volume{
-			Name: medusaSpec.StorageProperties.StorageSecretRef.Name,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: medusaSpec.StorageProperties.StorageSecretRef.Name,
-				},
+	secretVolumeIndex, found := cassandra.FindVolume(&dcConfig.PodTemplateSpec, medusaSpec.StorageProperties.StorageSecretRef.Name)
+	secretVolume := &corev1.Volume{
+		Name: medusaSpec.StorageProperties.StorageSecretRef.Name,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: medusaSpec.StorageProperties.StorageSecretRef.Name,
 			},
-		}
-
-		newVolumes = append(newVolumes, medusaVolume{
-			Volume:      secretVolume,
-			VolumeIndex: secretVolumeIndex,
-			Exists:      found,
-		})
+		},
 	}
+
+	newVolumes = append(newVolumes, medusaVolume{
+		Volume:      secretVolume,
+		VolumeIndex: secretVolumeIndex,
+		Exists:      found,
+	})
 
 	// Pod info volume
 	podInfoVolumeIndex, found := cassandra.FindVolume(&dcConfig.PodTemplateSpec, "podinfo")
@@ -469,26 +436,6 @@ func GenerateMedusaVolumes(dcConfig *cassandra.DatacenterConfig, medusaSpec *api
 			Exists:      found,
 		})
 	}
-
-	// Management-api client certificates
-	if dcConfig.ManagementApiAuth != nil && dcConfig.ManagementApiAuth.Manual != nil {
-		managementApiVolumeIndex, found := cassandra.FindVolume(&dcConfig.PodTemplateSpec, "mgmt-encryption")
-		managementApiVolume := &corev1.Volume{
-			Name: "mgmt-encryption",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: dcConfig.ManagementApiAuth.Manual.ClientSecretName,
-				},
-			},
-		}
-
-		newVolumes = append(newVolumes, medusaVolume{
-			Volume:      managementApiVolume,
-			VolumeIndex: managementApiVolumeIndex,
-			Exists:      found,
-		})
-	}
-
 	return newVolumes
 }
 
@@ -500,11 +447,7 @@ func MedusaStandaloneDeploymentName(clusterName string, dcName string) string {
 	return fmt.Sprintf("%s-%s-medusa-standalone", clusterName, dcName)
 }
 
-func MedusaPurgeCronJobName(clusterName string, dcName string) string {
-	return fmt.Sprintf("%s-%s-medusa-purge", clusterName, dcName)
-}
-
-func StandaloneMedusaDeployment(medusaContainer corev1.Container, clusterName, dcName, namespace string, logger logr.Logger, medusaImage *images.Image) *appsv1.Deployment {
+func StandaloneMedusaDeployment(medusaContainer corev1.Container, clusterName, dcName, namespace string, logger logr.Logger) *appsv1.Deployment {
 	// The standalone medusa pod won't be able to resolve its own IP address using DNS entries
 	medusaContainer.Env = append(medusaContainer.Env, corev1.EnvVar{Name: "MEDUSA_RESOLVE_IP_ADDRESSES", Value: "False"})
 	medusaDeployment := &appsv1.Deployment{
@@ -529,9 +472,8 @@ func StandaloneMedusaDeployment(medusaContainer corev1.Container, clusterName, d
 					Containers: []corev1.Container{
 						medusaContainer,
 					},
-					ImagePullSecrets: images.CollectPullSecrets(medusaImage.ApplyDefaults(defaultMedusaImage)),
-					Volumes:          []corev1.Volume{},
-					Hostname:         MedusaStandaloneDeploymentName(clusterName, dcName),
+					Volumes:  []corev1.Volume{},
+					Hostname: MedusaStandaloneDeploymentName(clusterName, dcName),
 				},
 			},
 		},
@@ -576,51 +518,6 @@ func StandaloneMedusaService(dcConfig *cassandra.DatacenterConfig, medusaSpec *a
 	return medusaService
 }
 
-func PurgeCronJob(dcConfig *cassandra.DatacenterConfig, clusterName, namespace string, logger logr.Logger) (*batchv1.CronJob, error) {
-	cronJobName := MedusaPurgeCronJobName(cassdcapi.CleanupForKubernetes(clusterName), dcConfig.SanitizedName())
-	logger.Info(fmt.Sprintf("Creating Medusa purge backups cronjob: %s", cronJobName))
-	if len(cronJobName) > 253 {
-		return nil, fmt.Errorf("Medusa purge backups cronjob name too long (must be less than 253 characters). Length: %d, Job name: %s", len(cronJobName), cronJobName)
-	}
-	purgeCronJob := &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cronJobName,
-			Namespace: namespace,
-		},
-		Spec: batchv1.CronJobSpec{
-			Schedule:                   "0 0 * * *",
-			Suspend:                    pointer.Bool(false),
-			SuccessfulJobsHistoryLimit: pointer.Int32(3),
-			FailedJobsHistoryLimit:     pointer.Int32(1),
-			JobTemplate: batchv1.JobTemplateSpec{
-				Spec: batchv1.JobSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							RestartPolicy:      corev1.RestartPolicyOnFailure,
-							ServiceAccountName: getServiceAccountName(),
-							Containers: []corev1.Container{
-								{
-									Name:                     "k8ssandra-purge-backups",
-									Image:                    "bitnami/kubectl:1.29.3",
-									ImagePullPolicy:          corev1.PullIfNotPresent,
-									TerminationMessagePath:   "/dev/termination-log",
-									TerminationMessagePolicy: "File",
-									Command: []string{
-										"/bin/bash",
-										"-c",
-										createPurgeTaskStr(dcConfig.SanitizedName(), namespace),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	return purgeCronJob, nil
-}
-
 func generateMedusaProbe(configuredProbe *corev1.Probe) (*corev1.Probe, error) {
 	// Goalesce the custom probe with the default probe,
 	defaultProbe := defaultMedusaProbe()
@@ -653,27 +550,4 @@ func defaultMedusaProbe() *corev1.Probe {
 	}
 
 	return probe
-}
-
-func createPurgeTaskStr(dcName string, namespace string) string {
-	return fmt.Sprintf("printf \""+
-		"apiVersion: medusa.k8ssandra.io/v1alpha1\\n"+
-		"kind: MedusaTask\\n"+
-		"metadata:\\n"+
-		"  name: purge-backups-timestamp\\n"+
-		"  namespace: %s\\n"+
-		"spec:\\n"+
-		"  cassandraDatacenter: %s\\n"+
-		"  operation: purge"+
-		"\" "+
-		"| sed \"s/timestamp/$(date +%%Y%%m%%d%%H%%M%%S)/g\" "+
-		"| kubectl apply -f -", namespace, dcName)
-}
-
-func getServiceAccountName() string {
-	val, found := os.LookupEnv(serviceAccountNameEnvVar)
-	if !found {
-		return "default"
-	}
-	return val
 }
