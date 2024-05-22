@@ -83,6 +83,12 @@ func (r *K8ssandraClusterReconciler) reconcileMedusa(
 		// Create the Medusa standalone pod
 		desiredMedusaStandalone := medusa.StandaloneMedusaDeployment(*medusaContainer, kc.SanitizedName(), dcConfig.SanitizedName(), dcNamespace, logger)
 
+		desiredMedusaStandalone.Spec.Template.Spec.ServiceAccountName = dcConfig.ServiceAccount
+		defaultPodLabels := desiredMedusaStandalone.Spec.Template.Labels
+		overridesPodLabels := dcConfig.PodTemplateSpec.GetLabels()
+		desiredMedusaStandalone.Spec.Template.Labels = utils.MergeMap(overridesPodLabels, defaultPodLabels)
+		desiredMedusaStandalone.Spec.Template.Spec.SecurityContext = dcConfig.PodTemplateSpec.Spec.SecurityContext
+
 		// Add the volumes previously computed to the Medusa standalone pod
 		for _, volume := range volumes {
 			cassandra.AddOrUpdateVolumeToSpec(&desiredMedusaStandalone.Spec.Template, volume.Volume, volume.VolumeIndex, volume.Exists)

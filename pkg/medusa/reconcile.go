@@ -164,8 +164,8 @@ func UpdateMedusaInitContainer(dcConfig *cassandra.DatacenterConfig, medusaSpec 
 	}
 	setImage(medusaSpec.ContainerImage, restoreContainer)
 	restoreContainer.SecurityContext = medusaSpec.SecurityContext
-	restoreContainer.Env = medusaEnvVars(medusaSpec, k8cName, useExternalSecrets, "RESTORE")
-	restoreContainer.VolumeMounts = medusaVolumeMounts(medusaSpec, k8cName)
+	restoreContainer.Env = mergeEnvVars(restoreContainer.Env, medusaEnvVars(medusaSpec, k8cName, useExternalSecrets, "RESTORE"))
+	restoreContainer.VolumeMounts = mergeVolumeMounts(restoreContainer.VolumeMounts, medusaVolumeMounts(medusaSpec, k8cName))
 	restoreContainer.Resources = medusaInitContainerResources(medusaSpec)
 
 	if !found {
@@ -232,6 +232,10 @@ func CreateMedusaMainContainer(dcConfig *cassandra.DatacenterConfig, medusaSpec 
 
 func UpdateMedusaMainContainer(dcConfig *cassandra.DatacenterConfig, medusaContainer *corev1.Container) {
 	cassandra.UpdateContainer(&dcConfig.PodTemplateSpec, "medusa", func(c *corev1.Container) {
+		volumeMounts := mergeVolumeMounts(c.VolumeMounts, medusaContainer.VolumeMounts)
+		env := mergeEnvVars(c.Env, medusaContainer.Env)
+		medusaContainer.VolumeMounts = volumeMounts
+		medusaContainer.Env = env
 		*c = *medusaContainer
 	})
 }
@@ -550,4 +554,38 @@ func defaultMedusaProbe() *corev1.Probe {
 	}
 
 	return probe
+}
+
+// mergeVolumeMounts merges two lists of volume mounts, keeping only the first occurrence of each volume mount.
+func mergeVolumeMounts(overridesSpec, defaultSpec []corev1.VolumeMount) []corev1.VolumeMount {
+	return mergeStructSlice(overridesSpec, defaultSpec, func(vm corev1.VolumeMount) string {
+		return vm.Name
+	})
+}
+
+// mergeEnvVars merges two lists of envVars, keeping only the first occurrence of each env var.
+func mergeEnvVars(overridesSpec, defaultSpec []corev1.EnvVar) []corev1.EnvVar {
+	return mergeStructSlice(overridesSpec, defaultSpec, func(env corev1.EnvVar) string {
+		return env.Name
+	})
+}
+
+func mergeStructSlice[T any](overridesSpec, defaultSpec []T, getKey func(T) string) []T {
+	if len(overridesSpec) == 0 {
+		return defaultSpec
+	}
+
+	overridesMap := make(map[string]struct{}, len(overridesSpec))
+
+	for _, o := range overridesSpec {
+		overridesMap[getKey(o)] = struct{}{}
+	}
+
+	for _, n := range defaultSpec {
+		if _, found := overridesMap[getKey(n)]; !found {
+			overridesSpec = append(overridesSpec, n)
+		}
+	}
+
+	return overridesSpec
 }
